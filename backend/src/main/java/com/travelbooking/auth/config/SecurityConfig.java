@@ -1,6 +1,7 @@
 package com.travelbooking.auth.config;
 
 import com.travelbooking.auth.security.JwtAuthenticationFilter;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -16,15 +17,24 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Spring Security configuration.
+ * Spring Security configuration — Role-Based Access Control (RBAC).
  *
- * Public endpoints  → /api/auth/**  (login, register)
- *                     /h2-console/**
- * Admin-only        → /api/admin/**
- * Authenticated     → everything else
+ * Access rules:
+ *   /api/public/**  → accessible to everyone (no auth required)
+ *   /api/auth/**    → accessible to everyone (login, register)
+ *   /h2-console/**  → accessible to everyone (dev database console)
+ *   /api/user/**    → accessible to USER and ADMIN roles
+ *   /api/admin/**   → accessible to ADMIN only
+ *   All other       → requires authentication
+ *
+ * Returns proper JSON responses:
+ *   401 Unauthorized → when no valid authentication is provided
+ *   403 Forbidden    → when authentication is valid but role is insufficient
  */
 @Configuration
 @EnableWebSecurity
@@ -47,14 +57,53 @@ public class SecurityConfig {
             // CORS
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
 
-            // Route permissions
+            // ── Route permissions (RBAC rules) ──────────────────────────────
             .authorizeHttpRequests(auth -> auth
-                // Public: auth endpoints + H2 console
-                .requestMatchers("/api/auth/**", "/h2-console/**").permitAll()
-                // Admin-only
-                .requestMatchers("/api/admin/**").hasAuthority("ROLE_ADMIN")
-                // Everything else requires a valid JWT
+                // Public: no authentication required
+                .requestMatchers("/api/public/**").permitAll()
+                .requestMatchers("/api/auth/**").permitAll()
+                .requestMatchers("/h2-console/**").permitAll()
+
+                // User endpoints: accessible to USER and ADMIN
+                .requestMatchers("/api/user/**").hasAnyRole("USER", "ADMIN")
+
+                // Admin endpoints: accessible to ADMIN only
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+
+                // Everything else requires authentication
                 .anyRequest().authenticated()
+            )
+
+            // ── Custom 401 Unauthorized response ────────────────────────────
+            .exceptionHandling(ex -> ex
+                .authenticationEntryPoint((request, response, authException) -> {
+                    response.setContentType("application/json");
+                    response.setStatus(401);
+                    ObjectMapper mapper = new ObjectMapper();
+                    String body = mapper.writeValueAsString(Map.of(
+                        "timestamp", LocalDateTime.now().toString(),
+                        "status", 401,
+                        "error", "Unauthorized",
+                        "message", "Authentication required. Please provide a valid JWT token.",
+                        "path", request.getRequestURI()
+                    ));
+                    response.getWriter().write(body);
+                })
+
+                // ── Custom 403 Forbidden response ───────────────────────────
+                .accessDeniedHandler((request, response, accessDeniedException) -> {
+                    response.setContentType("application/json");
+                    response.setStatus(403);
+                    ObjectMapper mapper = new ObjectMapper();
+                    String body = mapper.writeValueAsString(Map.of(
+                        "timestamp", LocalDateTime.now().toString(),
+                        "status", 403,
+                        "error", "Forbidden",
+                        "message", "Access denied: you do not have the required role to access this resource.",
+                        "path", request.getRequestURI()
+                    ));
+                    response.getWriter().write(body);
+                })
             )
 
             // Stateless session — no HTTP session cookies
@@ -74,7 +123,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of("http://localhost:5173", "http://localhost:3000")); // React dev server
+        config.setAllowedOrigins(List.of("http://localhost:5173", "http://localhost:3000"));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
